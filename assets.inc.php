@@ -401,7 +401,7 @@ class Cabinet {
 			fac_DataCenter.DataCenterID=fac_Cabinet.DataCenterID ORDER BY Name ASC, 
 			Location ASC, LENGTH(Location);";
 
-		$selectList="<select name=\"cabinetid\" id=\"cabinetid\"><option value=\"-1\">Storage Room</option>";
+		$selectList="<select name=\"CabinetID\" id=\"CabinetID\"><option value=\"-1\">Storage Room</option>";
 
 		foreach($dbh->query($sql) as $selectRow){
 			if($selectRow["CabinetID"]==$this->CabinetID || $person->canWrite($selectRow["AssignedTo"])){
@@ -1365,17 +1365,32 @@ class Device {
 			WarrantyExpire=\"".date("Y-m-d", strtotime($this->WarrantyExpire))."\", Notes=\"$this->Notes\", 
 			Reservation=$this->Reservation, HalfDepth=$this->HalfDepth, BackSide=$this->BackSide;";
 
-		if ( ! $dbh->exec( $sql ) ) {
+		if(!$dbh->exec($sql)){
 			$info = $dbh->errorInfo();
 
 			error_log( "PDO Error: {$info[2]} SQL=$sql" );
 			return false;
 		}
 
-		$this->DeviceID = $dbh->lastInsertId();
+		$this->DeviceID=$dbh->lastInsertId();
 
 		DevicePorts::createPorts($this->DeviceID);
 		PowerPorts::createPorts($this->DeviceID);
+
+		if($this->DeviceType=="CDU"){
+			$pdu=new PowerDistribution();
+			foreach($pdu as $prop => $val){
+				if(isset($this->$prop)){
+					$pdu->$prop=$this->$prop;
+				}
+			}
+			// Damn non-standard id field
+			$pdu->CabinetID=$this->Cabinet;
+			$pdu->CreatePDU($this->DeviceID);
+		}
+
+		if($this->DeviceType=="Sensor"){
+		}
 
 		(class_exists('LogActions'))?LogActions::LogThis($this):'';
 
@@ -1505,11 +1520,11 @@ class Device {
 			return false;
 		}
 		
-		if ( $dev == null ) {
-			$dev = $this->DeviceID;
+		if ( !(isset($this) && get_class($this) == __CLASS__) ) {
+			$dev = ( $dev == null ) ? $this->DeviceID : $dev;
 		}
 		
-		$sql = "update fac_Device set SNMPFailureCount=SNMPFailureCount+1 where DeviceID=" . $dev;
+		$sql = "update fac_Device set SNMPFailureCount=SNMPFailureCount+1 where DeviceID=$dev";
 		
 		if ( ! $dbh->query( $sql ) ) {
 			error_log( "Device::IncrementFailures::PDO Error: {$info[2]} SQL=$sql");
@@ -1527,7 +1542,11 @@ class Device {
 			return false;
 		}
 		
-		$sql = "update fac_Device set SNMPFailureCount=0 where DeviceID=" . ($dev == null) ? $this->DeviceID : $dev;
+		if ( !(isset($this) && get_class($this) == __CLASS__) ) {
+			$dev = ( $dev == null ) ? $this->DeviceID : $dev;
+		}
+		
+		$sql = "update fac_Device set SNMPFailureCount=0 where DeviceID=$dev";
 		
 		if ( ! $dbh->query( $sql ) ) {
 			error_log( "Device::ResetFailures::PDO Error: {$info[2]} SQL=$sql");
@@ -1577,6 +1596,10 @@ class Device {
 
 		// Delete all network connections first
 		DevicePorts::removeConnections($this->DeviceID);
+		// Delete all power connections too
+		$pc=new PowerConnection();
+		$pc->DeviceID=$this->DeviceID;
+		$pc->DeleteConnections();
 	}
   
 	function UpdateDevice() {
@@ -1710,6 +1733,7 @@ class Device {
 				}
 			}
 		}
+
 		if($this->DeviceType == "Patch Panel" && $tmpDev->DeviceType != $this->DeviceType){
 			// This asshole just changed a switch or something into a patch panel. Make the rear ports.
 			$p=new DevicePorts();
@@ -1730,7 +1754,23 @@ class Device {
 				}
 			}
 		}
-		
+
+		// Check and see if we extended the model to include any of the attributes for a CDU
+		if($this->DeviceType=="CDU"){
+			$pdu=new PowerDistribution();
+			$pdu->PDUID=$this->DeviceID;
+			$pdu->GetPDU();
+			foreach($pdu as $prop => $val){
+				// See if the device modal was extended
+				if(isset($this->$prop)){
+					$pdu->$prop=$this->$prop;
+				}
+			}
+			// Either we just updated this with new info or it's the same from the get
+			$pdu->CabinetID=$this->Cabinet;
+			$pdu->UpdatePDU();
+		}
+
 		//Update children, if necesary
 		if ($this->ChassisSlots>0 || $this->RearChassisSlots>0){
 				$this->SetChildDevicesCabinet();
@@ -1781,6 +1821,16 @@ class Device {
 		if($devRow=$dbh->query($sql)->fetch()){
 			foreach(Device::RowToObject($devRow) as $prop => $value){
 				$this->$prop=$value;
+			}
+
+			// Extend our device model
+			if($this->DeviceType=="CDU"){
+				$pdu=new PowerDistribution();
+				$pdu->PDUID=$this->DeviceID;
+				$pdu->GetPDU();
+				foreach($pdu as $prop => $val){
+					$this->$prop=$val;
+				}
 			}
 
 			return true;
